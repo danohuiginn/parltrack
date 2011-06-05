@@ -25,8 +25,15 @@ from string import strip
 from datetime import datetime
 from sys import argv, exit, stderr
 from ep_votes import scrape as scrape_votes
+import json
 
 URL = 'http://www.europarl.europa.eu/activities/plenary/pv/calendar.do'
+
+def dateJSONhandler(obj):
+    if hasattr(obj, 'isoformat'):
+        return obj.isoformat()
+    else:
+        raise TypeError, 'Object of type %s with value of %s is not JSON serializable' % (type(Obj), repr(Obj))
 
 def fetch(url):
     # url to etree
@@ -70,4 +77,4 @@ if __name__ == '__main__':
     if year >= 2004 and year < 2009:
         url = url+'&LEG_ID=6'
     # !! important part: getDates(fetch(url)) -> returns: array of dates !!
-    map(scrape_votes, getDates(fetch(url)))
+    print json.dumps(map(scrape_votes, getDates(fetch(url))),indent=1, default=dateJSONhandler)

@@ -21,16 +21,9 @@ import json, urllib2,sys
 from datetime import datetime
 from string import strip, uppercase
 from lxml.html.soupparser import parse
-from parltrack.environment import connect_db
 import unicodedata
 
 BASE_URL = 'http://www.europarl.europa.eu'
-db = connect_db()
-#proxy_handler = urllib2.ProxyHandler({'http': 'http://localhost:8123/'})
-#opener = urllib2.build_opener(proxy_handler)
-#("User-agent", "Mozilla/5.0 (Macintosh; U; PPC Mac OS X; en) AppleWebKit/125.2 (KHTML, like Gecko) Safari/125.8"),
-#opener.addheaders = [('User-agent', 'parltrack/0.7')]
-#urllib2.install_opener(opener)
 
 def fetch(url):
     # url to etree
@@ -250,9 +243,7 @@ def scrape(userid, name):
     # process other historical data
     for c in root.xpath("//td[@class='mepcountry']"):
         data=parseRoles(c, data)
-    q={'UserID': data['UserID']}
-    db.ep_meps.update(q, {"$set": data}, upsert=True)
-    print json.dumps(data, indent=1, default=dateJSONhandler, ensure_ascii=False).encode('utf-8')
+    return data
 
 group_map={ "Confederal Group of the European United Left - Nordic Green Left": 'GUE/NGL',
             "Confederal Group of the European United Left-Nordic Green Left": 'GUE/NGL',
@@ -449,6 +440,7 @@ COUNTRIES = {'BE': 'Belgium',
 
 if __name__ == "__main__":
     seen=[]
+    res=[]
     for letter in uppercase:
         for term in [3, 4, 5, 6, 7]:
             root = fetch("http://www.europarl.europa.eu/members/archive/term%d.do?letter=%s&language=EN" % (
@@ -458,5 +450,6 @@ if __name__ == "__main__":
                 userid=dict([x.split('=') for x in data.xpath("a")[0].attrib['href'].split('?')[1].split('&')])['id']
                 if not userid in seen:
                     print >>sys.stderr,data.xpath('a/text()')[0].encode('utf8')
-                    scrape(userid,data.xpath('a/text()')[0])
+                    res.append(scrape(userid,data.xpath('a/text()')[0]))
                     seen.append(userid)
+    print json.dumps(res, indent=1, default=dateJSONhandler, ensure_ascii=False).encode('utf-8')

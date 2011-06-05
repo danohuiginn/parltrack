@@ -24,7 +24,7 @@ from urllib2 import urlopen
 from string import strip
 from datetime import datetime
 from sys import argv, exit, stderr
-from parltrack.scrapers.ep_votes import scrape as scrape_votes
+from ep_votes import scrape as scrape_votes
 
 URL = 'http://www.europarl.europa.eu/activities/plenary/pv/calendar.do'
 

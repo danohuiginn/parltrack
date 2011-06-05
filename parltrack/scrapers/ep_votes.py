@@ -24,15 +24,8 @@ from lxml.etree import tostring
 from tempfile import mkdtemp, mkstemp
 import urllib2, json, sys, subprocess, os, re, unicodedata
 from cStringIO import StringIO
-from parltrack.environment import connect_db
 from datetime import datetime
 from ep_meps import group_map, groupids as Groupids
-from bson.objectid import ObjectId
-
-db = connect_db()
-db.ep_meps.ensure_index([('Name.aliases', 1)])
-db.ep_meps.ensure_index([('Name.familylc', 1)])
-db.ep_meps.ensure_index([('Name.aliases', 1)])
 
 def fetchVotes(d):
     url="%s%s%s" % ("http://www.europarl.europa.eu/sides/getDoc.do?pubRef=-//EP//NONSGML+PV+",
@@ -58,34 +51,9 @@ def dateJSONhandler(obj):
     else:
         raise TypeError, 'Object of type %s with value of %s is not JSON serializable' % (type(obj), repr(obj))
 
-mepCache={}
-def getMep(text,date):
-    name=''.join(unicodedata.normalize('NFKD', unicode(text.strip())).encode('ascii','ignore').split()).lower()
-    if name in mepCache:
-        return mepCache['name']
-
-    if not name: return
-    # TODO add date constraints based on groups.start/end
-    mep=db.ep_meps.find_one({'Name.aliases': name,
-                             "Constituencies.start" : {'$lt': date},
-                             "Constituencies.end" : {'$gt': date}},['_id'])
-    if not mep and u'ß' in text:
-        name=''.join(unicodedata.normalize('NFKD', unicode(text.replace(u'ß','ss').strip())).encode('ascii','ignore').split()).lower()
-        mep=db.ep_meps.find_one({'Name.aliases': name,
-                             "Constituencies.start" : {'$lt': date},
-                             "Constituencies.end" : {'$gt': date}},['_id'])
-    if not mep:
-        print >>sys.stderr, '[$] lookup oops:', text.encode('utf8')
-        mepCache['name']=None
-    else:
-        mepCache['name']=mep['_id']
-        return mep['_id']
-
 def splitMeps(text, res, date):
     for q in text.split('/'):
-        mep=getMep(q,date)
-        if mep:
-            res['rapporteur'].append((q,mep))
+        res['rapporteur'].append(q)
 
 def scanMeps(text, res, date):
     tmp=text.split(':')
@@ -108,9 +76,6 @@ def votemeta(line, date):
         line=''.join([m.group(1),m.group(3)])
         doc=m.group(2).replace(' ', '')
         res['report']=doc
-        report=db.dossiers.find_one({"activities.documents.title": doc},['_id'])
-        if report:
-            res['dossierid']=report['_id']
     m=tailre.match(line)
     if m:
         res['issue_type']=m.group(2).strip()
@@ -184,56 +149,7 @@ def scrape(f):
                     if voters[0][0]==':': voters[0]=voters[0][1:].strip()
                     vtmp=[]
                     for name in voters:
-                        mep=None
-                        try:
-                            queries=[({'Name.familylc': name.lower(),
-                                       "Groups.groupid": group,
-                                       "Groups.start" : {'$lt': vote['ts']},
-                                       "Groups.end" : {'$gt': vote['ts']} },1),
-                                     ({'Name.aliases': ''.join(name.split()).lower(),
-                                       "Groups.groupid": group,
-                                       "Groups.start" : {'$lt': vote['ts']},
-                                       "Groups.end" : {'$gt': vote['ts']}},2),
-                                     ({'Name.familylc': re.compile(name,re.I),
-                                       "Groups.groupid": group,
-                                       "Groups.start" : {'$lt': vote['ts']},
-                                       "Groups.end" : {'$gt': vote['ts']}},2),
-                                     ({'Name.familylc': name.lower()},3),
-                                     ({'Name.aliases': re.compile(name,re.I)},4),
-                                     ]
-                        except:
-                            if name==u'+-Montalto':
-                                queries.extend(
-                                    ({'Name.familylc': re.compile(re.escape('montalto'),re.I),
-                                      "Groups.groupid": group,
-                                      "Groups.start" : {'$lt': vote['ts']},
-                                      "Groups.end" : {'$gt': vote['ts']}},2),)
-                            else:
-                                raise
-                        if u'ß' in name:
-                            queries.extend([({'Name.familylc': name.replace(u'ß','ss').lower(),
-                                   "Groups.groupid": group,
-                                   "Groups.start" : {'$lt': vote['ts']},
-                                   "Groups.end" : {'$gt': vote['ts']} },1),
-                                 ({'Name.aliases': ''.join(name.split()).replace(u'ß','ss').lower(),
-                                   "Groups.groupid": group,
-                                   "Groups.start" : {'$lt': vote['ts']},
-                                   "Groups.end" : {'$gt': vote['ts']}},2),
-                                 ({'Name.familylc': re.compile(name.replace(u'ß','ss'),re.I),
-                                   "Groups.groupid": group,
-                                   "Groups.start" : {'$lt': vote['ts']},
-                                   "Groups.end" : {'$gt': vote['ts']}},2),
-                                 ({'Name.familylc': name.replace(u'ß','ss').lower()},3),
-                                 ({'Name.aliases': re.compile(name.replace(u'ß','ss'),re.I)},4)])
-                        for query,q in queries:
-                            mep=db.ep_meps.find_one(query)
-                            if mep:
-                                vtmp.append({'id': mep['_id'], 'orig': name})
-                                if q>2: print >>sys.stderr, '[!] weak mep', q, vote['ts'], group, name.encode('utf8')
-                                break
-                        if not mep:
-                            print >>sys.stderr, '[?] warning unknown MEP',vote['ts'] , group.encode('utf8'), name.encode('utf8')
-                            vtmp.append(name)
+                        vtmp.append(name)
                     vote[k][group]=vtmp
                 if cur.xpath('.//table'):
                     break
@@ -241,8 +157,6 @@ def scrape(f):
         try:
             cor=issue.xpath('ancestor::table')[0].xpath("following::table")[3]
         except IndexError:
-            q={'title': vote['title']}
-            db.ep_votes.update(q, {"$set": vote}, upsert=True)
             res.append(vote)
             continue
         try:
@@ -250,8 +164,6 @@ def scrape(f):
         except IndexError:
             has_corr=None
         if not has_corr:
-            q={'title': vote['title']}
-            db.ep_votes.update(q, {"$set": vote}, upsert=True)
             res.append(vote)
             continue
         skip=False
@@ -283,30 +195,7 @@ def scrape(f):
             vote[k]['correctional']=[]
             for name in voters:
                 mep=None
-                queries=[({'Name.familylc': name.lower(),
-                           "Constituencies.start" : {'$lt': vote['ts']},
-                           "Constituencies.end" : {'$gt': vote['ts']} }, 1),
-                         ({'Name.aliases': ' '.join(name.split()).lower(),
-                           "Constituencies.start" : {'$lt': vote['ts']},
-                           "Constituencies.end" : {'$gt': vote['ts']} },2),
-                         ]
-                if u'ß' in name:
-                    queries.extend([({'Name.familylc': name.replace(u'ß','ss').lower(),
-                           "Constituencies.start" : {'$lt': vote['ts']},
-                           "Constituencies.end" : {'$gt': vote['ts']} }, 1),
-                         ({'Name.aliases': ' '.join(name.split()).replace(u'ß','ss').lower(),
-                           "Constituencies.start" : {'$lt': vote['ts']},
-                           "Constituencies.end" : {'$gt': vote['ts']} },2)])
-                for query,q in queries:
-                    mep=db.ep_meps.find_one(query)
-                    if mep:
-                        vote[k]['correctional'].append({'id': mep['_id'], 'q': q, 'orig': name})
-                        break
-                if not mep:
-                    print >>sys.stderr, '[?] warning unknown MEP', vote['ts'], name.encode('utf8')
-                    vote[k]['correctional'].append(name)
-        q={'title': vote['title']}
-        db.ep_votes.update(q, {"$set": vote}, upsert=True)
+                vote[k]['correctional'].append(name)
         res.append(vote)
     return res
 
@@ -315,5 +204,5 @@ if __name__ == "__main__":
     if platform.machine() in ['i386', 'i686']:
         import psyco
         psyco.full()
-    scrape(sys.argv[1])
-    #print json.dumps(scrape(sys.argv[1]),indent=1, default=dateJSONhandler)
+    #scrape(sys.argv[1])
+    print json.dumps(scrape(sys.argv[1]),indent=1, default=dateJSONhandler)

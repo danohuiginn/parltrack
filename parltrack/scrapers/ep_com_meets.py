@@ -26,10 +26,7 @@ from tempfile import mkstemp
 from time import mktime, strptime
 from datetime import datetime
 import urllib2, sys, subprocess, re, os, json
-from parltrack.environment import connect_db
-from bson.objectid import ObjectId
 
-db = connect_db()
 datere=re.compile(r'^([0-9]{1,2} \w+ [0-9]{4}, [0-9]{2}\.[0-9]{2})(?: . [0-9]{2}\.[0-9]{2})?.*')
 block_start=re.compile(r'^([0-9]+)\. {,10}(.*)')
 fields=[(re.compile(r'^ {,10}Rapporteur: {3,}(.*)'),"Rapporteur"),
@@ -42,7 +39,7 @@ fields=[(re.compile(r'^ {,10}Rapporteur: {3,}(.*)'),"Rapporteur"),
 misc_block=re.compile(u'^ {,10}\uf0b7 {3,}(.*)')
 opinon_junk=re.compile(r'^ {,10}opinion: {3,}(.*)')
 comref_re=re.compile(r' {3,}(COM\([0-9]{4}\)[0-9]{4})')
-COMMITTEES=db.ep_com_meets.distinct('committee')
+mepre=re.compile(r'(.*) \((.*)\)$')
 COMMITTEE_MAP={'AFET': "Foreign Affairs",
                'DROI': "Human Rights",
                'SEDE': "Security and Defence",
@@ -180,14 +177,6 @@ def scrape(comid, url):
                 m=comref_re.search(line)
                 if m:
                     issue['comdoc']=m.group(1)
-                    dossier=db.dossiers.find_one({'procedure.reference': "COM/%s/%s" % (m.group(1)[4:8], m.group(1)[9:13])})
-                    if dossier:
-                        issue['comdoc']="COM/%s/%s" % (m.group(1)[4:8], m.group(1)[9:13])
-                        issue['comref']=dossier['_id']
-                    else:
-                        dossier=db.dossiers.find_one({'activities.documents.title': m.group(1)})
-                        if dossier:
-                            issue['comref']=dossier['_id']
             ax[1]="%s\n%s" % (ax[1],line)
 
     print >>sys.stderr, '\n'.join(["%s %s %s" % (i['tabling_deadline'].isoformat(),
@@ -207,7 +196,7 @@ def dateJSONhandler(obj):
     else:
         raise TypeError, 'Object of type %s with value of %s is not JSON serializable' % (type(obj), repr(obj))
 
-def crawl(db):
+def crawl():
     result=[]
     tree=fetch("http://www.europarl.europa.eu/activities/committees/committeesList.do?language=EN")
     select=tree.xpath('//a[@class="commdocmeeting"]')
@@ -231,9 +220,6 @@ def crawl(db):
             except:
                 print >>sys.stderr, 'url', url
                 raise
-            for item in data:
-                q={'src': url, 'seq_no': item['seq_no']}
-                db.ep_com_meets.update(q, {"$set": item}, upsert=True)
             result.append(data)
         else:
             print >> sys.stderr, '[!] Warning: no agenda/programme found', comid, murl
@@ -266,7 +252,6 @@ def scrapRap(text):
                 tail=''
     return res
 
-mepre=re.compile(r'(.*) \((.*)\)$')
 def getMep(text):
     if not text.strip(): return
     m=mepre.search(text.strip())
@@ -274,23 +259,9 @@ def getMep(text):
         group=m.group(2).strip()
         if group==None:
             return None
-
-        name=m.group(1).strip()
-        # TODO add date constraints based on groups.start/end
-        mep=db.ep_meps.find_one({'Name.aliases': ''.join(name.split()).lower(),
-                                 "Groups.groupid": group})
-        if not mep and u'ß' in name:
-            mep=db.ep_meps.find_one({'Name.aliases': ''.join(name.replace(u'ß','ss').split()).lower(),
-                                     "Groups.groupid": group})
-        if mep:
-            return mep['_id']
-        print >>sys.stderr, '[$] lookup oops:', text.encode('utf8')
-
-    #mep=db.ep_meps.find_one({'Name.aliases': ''.join(text.split()).lower().strip()})
-    #if not mep and u'ß' in text:
-    #    mep=db.ep_meps.find_one({'Name.aliases': ''.join(name.replace(u'ß','ss').split()).lower().strip()})
-    #if mep:
-    #    return mep['_id']
+        else:
+            return {'name': m.group(1),
+                    'group': m.group(2)}
 
 comre=re.compile(u'([A-Z]{4})(?: \(AL\)|\*? –)(.*)')
 comlistre=re.compile(u'[A-Z]{4}(?:(?: \u2013|,) [A-Z]{4})*')
@@ -309,14 +280,7 @@ def scrapOp(text):
         m=comre.search(line)
         if m:
             if tail:
-                name=tail.strip()
-                mep=db.ep_meps.find_one({'Name.aliases': ''.join(name.split()).lower()})
-                if not mep and u'ß' in name:
-                    mep=db.ep_meps.find_one({'Name.aliases': ''.join(name.replace(u'ß','ss').split()).lower()})
-                if mep:
-                    c['rapporteurs'].append(mep['_id'])
-                else:
-                    print >>sys.stderr, '[%] warning tail not empty', tail.encode('utf8')
+                c['tail']=tail.strip()
                 tail=''
             if 'committee' in c:
                 res.append(c)
@@ -347,19 +311,12 @@ def scrapOp(text):
             tail=line.strip()
     if 'committee' in c:
         if tail:
-            name=tail.strip()
-            mep=db.ep_meps.find_one({'Name.aliases': ''.join(name.split()).lower()})
-            if not mep and u'ß' in name:
-                mep=db.ep_meps.find_one({'Name.aliases': ''.join(name.replace(u'ß','ss').split()).lower()})
-            if mep:
-                c['rapporteurs'].append(mep['_id'])
-            else:
-                print >>sys.stderr, '[%] warning tail not empty', tail.encode('utf8')
+            c['tail']=tail.strip()
         res.append(c)
     return res
 
 
 if __name__ == "__main__":
-    crawl(db)
+    crawl()
     #print json.dumps(scrape('LIBE','http://www.europarl.europa.eu/meetdocs/2009_2014/documents/libe/oj/867/867690/867690en.pdf'),indent=1,default=dateJSONhandler)
     # find some tabling dates: db.ep_com_meets.find({'tabling_deadline' : { $exists : true }}).sort({'tabling_deadline': -1})

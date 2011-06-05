@@ -25,37 +25,14 @@ from itertools import izip_longest
 import urllib2, urllib, cookielib, datetime, sys, json, logging, re
 from operator import itemgetter
 import unicodedata
-try:
-    from parltrack.environment import connect_db
-    db = connect_db()
-except:
-    import pymongo
-    db=pymongo.Connection().parltrack
-from bson.objectid import ObjectId
-
-db.oeil.ensure_index([('reference.procedure', 1)])
-db.oeil.ensure_index([('activities.actors.mepref', 1)])
-db.oeil.ensure_index([('activities.actors.commitee', 1)])
 
 # and some global objects
 base = 'http://www.europarl.europa.eu/oeil/file.jsp'
 opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookielib.CookieJar()))
 opener.addheaders = [('User-agent', 'weurstchen/0.5')]
 # connect to  mongo
-stats=[0,0]
 commitee_actorre=re.compile(r'^EP:.*(by|of) the committee responsible')
-
-def getMEPRef(name):
-    if not name: return
-    mep=db.ep_meps.find_one({'Name.aliases': ''.join(name.split()).lower()},['_id'])
-    if not mep and u'ß' in name:
-        mep=db.ep_meps.find_one({'Name.aliases': ''.join(name.replace(u'ß','ss').split()).lower()},['_id'])
-    if not mep and unicodedata.normalize('NFKD', unicode(name)).encode('ascii','ignore')!=name:
-        mep=db.ep_meps.find_one({'Name.aliases': ''.join(unicodedata.normalize('NFKD', unicode(name)).encode('ascii','ignore').split()).lower()},['_id'])
-    if mep:
-        return mep['_id']
-    else:
-        print >>sys.stderr, 'lookup oops', actor['name'].encode('utf8'), item['meta']['source']
+results=[]
 
 def makeActivities(data):
     #print >> sys.stderr, data
@@ -170,34 +147,13 @@ def makeActivities(data):
 
 def save(data):
     data['activities']=makeActivities(data)
-    #print json.dumps(data,default=dateJSONhandler)
-    #pprint.pprint(data)
-    #return
     src=data['meta']['source']
-
-    res=db.dossiers.find_one({ 'meta.source' : src }) or {}
-    d=diff(dict([(k,v) for k,v in data.items() if not k in ['_id', 'meta', 'changes',]]),
-           dict([(k,v) for k,v in res.items() if not k in ['_id', 'meta', 'changes']]))
-    if d:
-        now=datetime.datetime.utcnow().replace(microsecond=0).isoformat()
-        if not res:
-            print ('\tadding %s - %s' % (data['procedure']['reference'],data['procedure']['title'])).encode('utf8')
-            data['meta']['created']=data['meta']['timestamp']
-            del data['meta']['timestamp']
-            sys.stdout.flush()
-            stats[0]+=1
-        else:
-            print ('\tupdating  %s - %s' % (data['procedure']['reference'],data['procedure']['title'])).encode('utf8')
-            data['meta']['updated']=data['meta']['timestamp']
-            del data['meta']['timestamp']
-            sys.stdout.flush()
-            stats[1]+=1
-            data['_id']=res['_id']
-            #print >> sys.stderr, (d)
-        data['changes']=res.get('changes',{})
-        data['changes'][now]=d
-        db.dossiers.save(data)
-    return stats
+    now=datetime.datetime.utcnow().replace(microsecond=0).isoformat()
+    print ('\tscraping %s - %s' % (data['procedure']['reference'],data['procedure']['title'])).encode('utf8')
+    data['meta']['created']=data['meta']['timestamp']
+    del data['meta']['timestamp']
+    sys.stdout.flush()
+    return data
 
 def diff(e1,e2):
     if type(e1) == str:
@@ -455,7 +411,6 @@ def agents(table):
                 agent['commitee']=commitee
                 agent['responsible']=comrole
                 agent['name']=row.get('rapporteur')
-                agent['mepref']=getMEPRef(row.get('rapporteur'))
                 agent['function']='MEP'
                 agent['body']='EP'
                 agent['date']=row.get('appointed')
@@ -465,7 +420,6 @@ def agents(table):
                 res.extend([{'commitee': commitee,
                              'responsible': comrole,
                              'name': p[0],
-                             'mepref': getMEPRef(p[0]),
                              'function': 'MEP',
                              'body': 'EP',
                              'date': p[1],
@@ -610,7 +564,7 @@ def scrape(url):
             res['docs']=summaries(table)
         #else:
         #    print >> sys.stderr, ('[*] unparsed: '+ section.text)
-    save(res)
+    return save(res)
 
 def getStages():
     try:
@@ -628,10 +582,10 @@ def getStages():
 def nextPage(req):
     response = opener.open(req)
     tree=parse(response)
-    map(scrape, ['http://www.europarl.europa.eu/oeil/'+x.get('href')
-                   for x
-                   in tree.xpath('//a[@class="com_acronym"]')])
-
+    results.extend(map(scrape, ['http://www.europarl.europa.eu/oeil/'+x.get('href')
+                       for x
+                       in tree.xpath('//a[@class="com_acronym"]')]))
+    
     img=tree.xpath('//a/img[@src="img/cont/activities/navigation/navi_next_activities.gif"]')
     if len(img):
         next='http://www.europarl.europa.eu/'+img[0].xpath('..')[0].get('href')
@@ -639,7 +593,6 @@ def nextPage(req):
         nextPage(next)
 
 def crawl(fast=True):
-    result=[]
     stages=getStages()
     if fast: stages=[x for x in stages if x[1] != 'Procedure completed']
     for (stageid, stage) in stages:
@@ -654,8 +607,7 @@ def crawl(fast=True):
         req = urllib2.Request('http://www.europarl.europa.eu/oeil/FindByStage.do',
                               urllib.urlencode(data))
         nextPage(req)
-        #result.extend(nextPage(req))
-    return result
+    print json.dumps(results, indent=1, default=dateJSONhandler, ensure_ascii=False).encode('utf-8')
 
 if __name__ == "__main__":
     crawl(fast=(False if len(sys.argv)>1 and sys.argv[1]=='full' else True))

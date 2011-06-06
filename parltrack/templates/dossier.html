@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% block scripts %}
+<script type=text/javascript src="{{ url_for('.static', filename='js/ckeditor/ckeditor.js') }}"></script>
+
 <script type="text/javascript">
      $(document).ready(function() {
        $('.has_summary').click(function() {
@@ -26,6 +28,10 @@
                 $.ajax({url: '/notification/'+group+'/add/dossiers/'+$('#content > h2:first').html()});
             }
             return false;
+       });
+       CKEDITOR.replace( 'editor', {
+         //extraPlugins : 'autogrow'
+         //toolbar : 'parltracktoolbar'
        });
      });
     </script>
@@ -54,6 +60,7 @@
     <li><a href="#activities">Activities</a></li>
     {% if dossier.docs|length %}<li><a href="#documents">Documents</a></li>{%endif%}
     {% if dossier.votes %}<li><a href="#votes">Votes</a></li>{%endif%}
+    <li><a href="#notes">Notes</a></li>
   </ul>
 <div id="general">
 <div>Subjects
@@ -263,4 +270,8 @@
 {%endfor%}
 </div>
 {% endif %}
+<div id="notes">
+<h3>Notes</h3>
+<textarea name='editor'>{% if dossier.notes %}{{dossier.notes}}{% endif %}</textarea>
+<input type='hidden' name='detail' id='detail' value=''> </div>
 {% endblock %}
